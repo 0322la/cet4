@@ -411,10 +411,10 @@ const TASK_STEPS = {
     '今天只要过一遍，不要求当场背熟，忘了它几天后会自己回来'
   ],
   听力: [
-    '第一遍盲听，只抓关键词，忍住不暂停',
-    '第二遍逐句听写：听一句按一次暂停，把听到的写下来，最多重放 3 遍',
-    '对原文，把「听得清但不知道意思」的词全部抄进词库——这类词才是你丢分的原因',
-    '最后再整段重听一遍，这时候你应该能跟上大意了'
+    '盲听 5 分钟：整段放一遍，不停顿、不回退，只抓大意（先不要写字）',
+    '逐句听写 17 分钟：听一句按一次暂停、写一句，最多重放 3 遍；写不出来的先画空，别停在那句上',
+    '对原文 5 分钟：把「听得清但不知道意思」的词全部抄进词库——这类词才是你丢分的原因',
+    '地基期只挑一段 3–4 分钟的音频：整套 25 分钟要听透需要 60 分钟以上，27 分钟只够把一段吃干。泛听一整晚，不如把一段默写出来'
   ],
   阅读: [
     '先看题干，划出关键词（人名、数字、大写词），再回原文找同一意思的地方',
@@ -448,6 +448,8 @@ function freshState() {
       theme: 'dark',
       accent: 'blue',
       wordUnit: 1,
+      wordUnitTotal: 11,
+      newWordsPerDay: 35,
       zhentiNo: 1,
       aiBase: 'https://api.deepseek.com',
       aiModel: 'deepseek-chat',
@@ -566,10 +568,18 @@ function buildTasks(dateKey) {
   const info = dayInfo();
   const { factor, note } = loadFactor();
   const acc = vocabAccuracy(3);
-  const newWordBase = info.phase.id === 'foundation' ? 30 : info.phase.id === 'build' ? 20 : 10;
-  const newWords = Math.max(8, Math.round(newWordBase * factor * (acc !== null && acc < 0.7 ? 0.7 : 1)));
-  const reviewWords = Math.round((info.phase.id === 'foundation' ? 70 : info.phase.id === 'build' ? 80 : 60) * factor);
   const mins = S.settings.dailyMinutes;
+  /* 词汇的时间占比：地基期最重。新词量、复习量都跟着「词汇分钟数」自动伸缩，
+     所以你把每日时长调大，真正变多的不只是分钟，还有每天要记的词数。 */
+  const vocabShare = info.phase.id === 'foundation' ? 0.46 : info.phase.id === 'build' ? 0.30 : 0.20;
+  const vocabMins = mins * vocabShare;
+  const accFactor = (acc !== null && acc < 0.7) ? 0.7 : 1;
+  const manualNew = Number(S.settings.newWordsPerDay) || 0;
+  const newWords = manualNew > 0
+    ? clamp(Math.round(manualNew * accFactor), 5, 120)
+    : clamp(Math.round(vocabMins * 0.70 * factor * accFactor), 8, 80);
+  const reviewWords = clamp(Math.round(vocabMins * 1.60 * factor), 20, 300);
+  const stillNew = Object.values(S.words).some(w => w.box === null);
   const tasks = [];
   const push = (type, title, minutes) => tasks.push({
     id: uid(), type, title, minutes,
@@ -581,14 +591,17 @@ function buildTasks(dateKey) {
   const BOOK = '《闪过四级词汇》';
   const PAPER = '《刘晓燕四级真题快刷》';
   if (info.phase.id === 'foundation') {
-    push('词汇', `${BOOK}第 ${u} 单元：看英文想中文，想不起来的点「忘记」，再复习 ${reviewWords} 个旧词`, Math.round(mins * 0.38));
-    push('听力', `${PAPER}第 ${z} 套听力：盲听一遍 → 逐句听写 → 把「听得清但不懂」的词录进词库`, Math.round(mins * 0.22));
-    push('精读', `${PAPER}第 ${z} 套里最看不懂的那一篇：不掐时间，逐句翻成中文`, Math.round(mins * 0.16));
-    push('阅读', `${PAPER}第 ${z} 套仔细阅读 1 篇：先看题干、按顺序定位，限时 9 分钟`, Math.round(mins * 0.12));
-    push('翻译', `${PAPER}第 ${z} 套翻译：1 句，改到自己满意`, Math.round(mins * 0.07));
-    push('词汇', '把昨天点「忘记」的词单独过一遍', Math.max(5, Math.round(mins * 0.05)));
+    push('词汇', stillNew
+      ? `${BOOK}第 ${u} 单元（新词 ${newWords} 个）：看英文想中文，想不起来的点「忘记」，再复习 ${reviewWords} 个旧词`
+      : `${BOOK}已过完一遍：今天是纯复习，把到期的 ${reviewWords} 个词过一遍，重点看标过「忘记」的`,
+      Math.round(mins * 0.46));
+    push('听力', `${PAPER}第 ${z} 套：挑一段 3–4 分钟的音频精听（不是整套）：盲听 → 逐句听写 → 抄下听不懂的词`, Math.round(mins * 0.21));
+    push('精读', `${PAPER}第 ${z} 套里最看不懂的那一篇：不掐时间，逐句翻成中文`, Math.round(mins * 0.15));
+    push('阅读', `${PAPER}第 ${z} 套仔细阅读 1 篇：先看题干、按顺序定位，限时 9 分钟`, Math.round(mins * 0.09));
+    push('翻译', `${PAPER}第 ${z} 套翻译：1 句，改到自己满意`, Math.round(mins * 0.05));
+    push('词汇', '把昨天点「忘记」的词单独过一遍', Math.max(5, Math.round(mins * 0.04)));
   } else if (info.phase.id === 'build') {
-    push('词汇', `${BOOK}第 ${u} 单元 + 复习队列 ${reviewWords} 个`, Math.round(mins * 0.26));
+    push('词汇', `${BOOK}第 ${u} 单元（新词 ${newWords} 个）+ 复习队列 ${reviewWords} 个`, Math.round(mins * 0.26));
     push('听力', `${PAPER}第 ${z} 套听力完整做一遍（25 分钟不停）`, Math.round(mins * 0.28));
     push('阅读', `${PAPER}第 ${z} 套阅读 2 篇，限时 18 分钟`, Math.round(mins * 0.26));
     push('写作', `写 1 篇作文（120 词）或背 1 个万能句型`, Math.round(mins * 0.2));
@@ -1165,24 +1178,71 @@ let vocabTab = 'review';
 let vq = [], vIdx = 0, vRevealed = false, vRight = 0, vTotal = 0;
 let vMode = 'read';      // read = 看词想义；listen = 听音想义
 let vLastSpoken = -1;
+let vqSample = new Set();  // 本轮里属于「抽查」的词
 
 function seedWords(force) {
-  let added = 0;
+  let added = 0, i = 0;
   SEED_WORDS.split('\n').forEach(line => {
+    i++;
     const [w, pos, m] = line.split('|').map(s => (s || '').trim());
     if (!w || !m) return;
-    if (!S.words[w]) { S.words[w] = { w, pos: pos || '', m, box: null, due: '', lapses: 0, seen: 0, right: 0 }; added++; }
+    /* ord 给大值：自己导入的词永远排在内置词表前面 */
+    if (!S.words[w]) { S.words[w] = { w, pos: pos || '', m, box: null, due: '', lapses: 0, seen: 0, right: 0, ord: 100000 + i }; added++; }
   });
   save(true);
   return added;
 }
 
+/* 新词顺序：按你导入的先后排，也就是按书上单元的先后排 */
+function nextWordOrd() {
+  S.meta.wordSeq = (S.meta.wordSeq || 0) + 1;
+  return S.meta.wordSeq;
+}
+
+/* 旧数据里没有 ord 的词补一个：内置词表排后面，自己导入的按录入顺序排前面 */
+function migrateWordOrder() {
+  if (S.meta.ordMigrated) return;
+  const seedSet = new Set(SEED_WORDS.trim().split('\n').map(l => (l.split('|')[0] || '').trim()).filter(Boolean));
+  let seq = S.meta.wordSeq || 0, changed = false;
+  Object.values(S.words).forEach(w => {
+    if (typeof w.ord === 'number') return;
+    if (seedSet.has(w.w)) w.ord = 100000;
+    else w.ord = ++seq;
+    changed = true;
+  });
+  S.meta.wordSeq = seq;
+  S.meta.ordMigrated = true;
+  if (changed) save(true);
+}
+
 function addWord(w, pos, m) {
   const key = String(w || '').trim();
   if (!key) return false;
-  S.words[key] = { w: key, pos: pos || '', m: m || '（待补充释义）', box: null, due: '', lapses: 0, seen: 0, right: 0 };
+  const exist = S.words[key];
+  if (exist) {
+    /* 已存在这个词：更新释义和词性，但保留原来的记忆进度，并把它并入「书上顺序」 */
+    if (pos) exist.pos = pos;
+    if (m) exist.m = m;
+    if (typeof exist.ord !== 'number' || exist.ord >= 100000) exist.ord = nextWordOrd();
+    save(true);
+    return false;
+  }
+  S.words[key] = { w: key, pos: pos || '', m: m || '（待补充释义）', box: null, due: '', lapses: 0, seen: 0, right: 0, ord: nextWordOrd() };
   save(true);
   return true;
+}
+
+/* 把内置词表里「还没学过、也不在你的书里」的词删掉，只留你自己导入的 */
+function removeSeedWords() {
+  const seeds = new Set(SEED_WORDS.trim().split('\n').map(l => (l.split('|')[0] || '').trim()).filter(Boolean));
+  let removed = 0;
+  Object.keys(S.words).forEach(k => {
+    const w = S.words[k];
+    const isSeedOnly = seeds.has(k) && !(typeof w.ord === 'number' && w.ord < 100000);
+    if (isSeedOnly && w.box === null) { delete S.words[k]; removed++; }
+  });
+  save(true);
+  return removed;
 }
 
 function wordStats() {
@@ -1202,9 +1262,25 @@ function buildVocabQueue() {
   const all = Object.values(S.words);
   const due = all.filter(w => w.box !== null && w.due && w.due <= k)
     .sort((a, b) => (a.box - b.box) || a.due.localeCompare(b.due));
-  const fresh = all.filter(w => w.box === null).sort((a, b) => a.w.localeCompare(b.w));
+  const fresh = all.filter(w => w.box === null).sort((a, b) => (a.ord || 100000) - (b.ord || 100000));
   const rl = day.reviewWords || 80, nl = day.newWords || 20;
-  return [...due.slice(0, rl), ...fresh.slice(0, nl)];
+  const duePart = due.slice(0, rl);
+  vqSample = new Set();
+
+  /* 书上的词全过完之后，进入「滚动抽查」：随机把学过的词翻出来再见一面，
+     不让「背完一遍」变成「慢慢忘光」。 */
+  if (fresh.length === 0) {
+    const dueKeys = new Set(duePart.map(w => w.w));
+    const pool = all.filter(w => w.box !== null && w.box >= 1 && !dueKeys.has(w.w));
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+    }
+    const sample = pool.slice(0, Math.min(Math.round(rl * 0.25), pool.length));
+    sample.forEach(w => vqSample.add(w.w));
+    return [...duePart, ...sample];
+  }
+  return [...duePart, ...fresh.slice(0, nl)];
 }
 
 function gradeWord(ok) {
@@ -1273,6 +1349,7 @@ function renderVocab() {
           <div class="pos">${hideWord ? '' : esc(word.pos || '')}</div>
           <div class="m">${vRevealed || hideWord ? (vRevealed ? esc(word.m) : '<span class="muted">想出来了吗？点下面揭晓</span>') : '<span class="muted">先在心里想一遍，再点下面</span>'}</div>
           ${word.lapses ? `<div class="ex muted">这个词你忘了 ${word.lapses} 次${word.box !== null ? ` · 下次间隔 ${SRS_LABEL[word.box] || '1 天'}` : ''}</div>` : ''}
+          ${vqSample.has(word.w) ? '<div class="ex muted">抽查：这个词还没到期，提前见一面</div>' : ''}
           <div class="acts">
             <button class="btn ghost" id="vSpeak">🔊 听发音</button>
             ${vRevealed
@@ -1667,7 +1744,7 @@ function renderToday() {
       <h2>材料进度<span class="sub">做完一个单元或一套，点一下 +1</span></h2>
       <div class="grid two mt">
         <div class="row between" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--panel2)">
-          <div>《闪过四级词汇》<div style="font-size:20px;font-weight:650">第 ${S.settings.wordUnit || 1} 单元</div></div>
+          <div>《闪过四级词汇》<div style="font-size:20px;font-weight:650">第 ${S.settings.wordUnit || 1} / ${S.settings.wordUnitTotal || 11} 单元</div></div>
           <div class="row"><button class="btn sm" data-step="unit:-1">－</button><button class="btn sm primary" data-step="unit:1">+1 单元</button></div>
         </div>
         <div class="row between" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--panel2)">
@@ -1795,6 +1872,7 @@ function renderDrill() {
         <button class="btn primary" id="scSave">算分并保存</button>
         <span class="muted tiny">四级总分 710，425 过线。听力 248.5，阅读 248.5，写作翻译 213。</span>
       </div>
+      <p class="hint"><b>这个估分是保守值。</b>它是按你的正确率直接折算的；四级实际报道分用的是常模转换，同样的原始分通常换算出来更高。所以它的正确用法是<b>跟自己的上一次比</b>，看走势，而不是当成真实分数的预测。</p>
       ${scores.length ? `
         <div class="sep"></div>
         <table><thead><tr><th>日期</th><th>听力</th><th>阅读</th><th>写作翻译</th><th>估分</th><th>备注</th><th></th></tr></thead><tbody>
@@ -1988,15 +2066,16 @@ function buildWeeklyReport({ wk, prev, acc, newMistakes, series, done }) {
    --------------------------------------------------------------------- */
 const DEFAULT_ROUTINES = {
   foundation: [
-    { title: '看词想义：把今天的词汇队列过一遍', minutes: 25, howto: '看到英文先逼自己想中文，超过 3 秒没想起来就点「忘记」' },
-    { title: '听音想义：把今天碰到的词再刷一遍', minutes: 12, howto: '只放声音、不看单词，专治「听得清但想不起意思」' },
+    { title: '看词想义：把今天的词汇队列过一遍', minutes: 35, howto: '看到英文先逼自己想中文，超过 3 秒没想起来就点「忘记」' },
+    { title: '听音想义：把今天碰到的词再刷一遍', minutes: 20, howto: '只放声音、不看单词，专治「听得清但想不起意思」' },
     { title: '把今天查到的生词录进词库', minutes: 5, howto: '听写和精读里查过的词，一个都别放过' },
-    { title: '听力：整段盲听一遍', minutes: 5, howto: '不停顿、不回退，先抓大意' },
-    { title: '听力：逐句听写', minutes: 15, howto: '听一句按一次暂停，写一句，最多重放 3 遍' },
-    { title: '听力：对原文，抄下「听得清但不懂」的词', minutes: 4, howto: '这类词才是你丢分的原因' },
-    { title: '精读：最看不懂的那一篇逐句翻成中文', minutes: 18, howto: '不掐时间；翻不动的句子先找主干' },
-    { title: '阅读：仔细阅读 1 篇，限时', minutes: 13, howto: '先看题干划关键词，按题目顺序回原文定位' },
-    { title: '翻译：汉译英 1 句', minutes: 8, howto: '先找主干，不会的词用简单词绕过去' },
+    { title: '听力：挑一段 3-4 分钟的音频，整段盲听一遍', minutes: 5, howto: '只挑一段，不是整套。不停顿、不回退，先抓大意' },
+    { title: '听力：逐句听写这一段', minutes: 17, howto: '听一句按一次暂停，写一句，最多重放 3 遍' },
+    { title: '听力：对原文，抄下「听得清但不懂」的词', minutes: 5, howto: '这类词才是你丢分的原因' },
+    { title: '精读：最看不懂的那一篇逐句翻成中文', minutes: 20, howto: '不掐时间；翻不动的句子先找主干' },
+    { title: '阅读：仔细阅读 1 篇，限时', minutes: 12, howto: '先看题干划关键词，按题目顺序回原文定位' },
+    { title: '翻译：汉译英 1 句', minutes: 7, howto: '先找主干，不会的词用简单词绕过去' },
+    { title: '回炉：把昨天点「忘记」的词单独过一遍', minutes: 5, howto: '只过昨天点过「忘记」的词；别拿它当第二遍新词课' },
     { title: '收尾：打卡 + 写一句今天最卡的地方', minutes: 3, howto: '写具体，别写「词汇不行」' }
   ],
   build: [
@@ -2083,6 +2162,16 @@ function renderRoutine() {
     </div>
     <div class="card">
       ${rows || '<p class="muted">这条流程是空的，点上面的「恢复推荐流程」或「加一步」。</p>'}
+    </div>
+    <div class="card">
+      <h2>四条红线<span class="sub">这四件事只要出现，就是走错路了</span></h2>
+      <ul class="hint" style="padding-left:20px;line-height:2">
+        <li><b>跳过复习、只背新词</b> —— 复习是复利，新词只是本金。只投本金不取利息，最后两样都没有。</li>
+        <li><b>一天背 100 个新词</b> —— 超过记忆负荷，正确率会崩，第二天回炉的量反而把你拖死。地基期就 35 个。</li>
+        <li><b>听力只泛听、不听写</b> —— 你的问题是「听得清但想不起意思」，泛听对这个毛病无效。</li>
+        <li><b>把选词填空当重点练</b> —— 它只占约 5%，投入产出比最差，等考前两周再说。</li>
+      </ul>
+      <p class="hint">这四条是和你确认过的：提出这四件事的时候，直接拦。其他的调整（换时间、换顺序、加减模块）都可以商量。</p>
     </div>`;
 
   $('#rPhase').onchange = e => { routinePhase = e.target.value; renderRoutine(); };
@@ -2175,6 +2264,8 @@ function renderSettings() {
       <div class="grid two mt">
         <label class="field"><span>《闪过四级词汇》当前单元</span><input id="setUnit" type="number" min="1" max="200" value="${esc(s.wordUnit || 1)}"></label>
         <label class="field"><span>《刘晓燕四级真题快刷》做到第几套</span><input id="setZhenti" type="number" min="1" max="100" value="${esc(s.zhentiNo || 1)}"></label>
+        <label class="field"><span>单词书一共几个单元</span><input id="setUnitTotal" type="number" min="1" max="200" value="${esc(s.wordUnitTotal || 11)}"></label>
+        <label class="field"><span>每天新词目标（填 0 表示交给 App 自动算）</span><input id="setNewPerDay" type="number" min="0" max="120" value="${esc(s.newWordsPerDay || 0)}"></label>
       </div>
       <p class="hint">说明：App 自带的 284 个高频词只是打底，真正的词汇量靠那本书。App 负责的是记住——书上过完一个单元，把不熟的词录进这里，它按 1/2/4/7/15/30 天替你排复习。</p>
     </div>
@@ -2192,6 +2283,7 @@ function renderSettings() {
         <button class="btn" id="impBtn">导入备份</button>
         <input id="impFile" type="file" accept=".json,application/json" style="display:none">
         <button class="btn ghost" id="seedBtn">补齐内置高频词表</button>
+        <button class="btn ghost" id="purgeSeedBtn">删掉内置词表</button>
       </div>
       <div class="sep"></div>
       <div class="row">
@@ -2218,6 +2310,8 @@ function renderSettings() {
     S.settings.theme = $('#setTheme').value;
     S.settings.wordUnit = clamp(Number($('#setUnit').value) || 1, 1, 200);
     S.settings.zhentiNo = clamp(Number($('#setZhenti').value) || 1, 1, 100);
+    S.settings.wordUnitTotal = clamp(Number($('#setUnitTotal').value) || 11, 1, 200);
+    S.settings.newWordsPerDay = clamp(Number($('#setNewPerDay').value) || 0, 0, 120);
     ensureToday(true);
     save(true); applyTheme(); render(); toast('已保存', 'ok');
   };
@@ -2258,6 +2352,17 @@ function renderSettings() {
     fr.readAsText(f); e.target.value = '';
   };
   $('#seedBtn').onclick = () => { const n = seedWords(); toast(n ? `补入 ${n} 个词` : '内置词表已经都在词库里了', 'ok'); render(); };
+  $('#purgeSeedBtn').onclick = () => {
+    openSheet(`<h2>删掉内置词表？</h2>
+      <p class="hint">只会删掉「内置词表里、你还没学过、而且不在你自己导入的清单里」的词。已经背过的词、以及你导入的词，都不会动。</p>
+      <p class="hint">适合你这种按自己的书背单词的情况——删掉之后，App 的新词队列就完全跟着你的书走。</p>
+      <div class="row mt"><button class="btn danger" id="pgYes">确认删除</button><button class="btn ghost" onclick="closeSheet()">算了</button></div>`);
+    $('#pgYes').onclick = () => {
+      const n = removeSeedWords();
+      closeSheet(); vq = []; render();
+      toast(n ? `已删掉 ${n} 个内置词，剩下的都是你自己的词` : '没有可删的词（都已经学过或已导入）', 'ok');
+    };
+  };
   $('#resetBtn').onclick = () => {
     openSheet(`<h2>确认清空？</h2><p class="hint">打卡记录、词库进度、错题本都会消失，而且无法恢复。如果只是想重新开始计划，改一下考试日期就够了，不用清空。</p>
       <div class="row mt"><button class="btn danger" id="rsYes">我确定清空</button><button class="btn ghost" onclick="closeSheet()">算了</button></div>`);
@@ -2352,6 +2457,7 @@ function boot() {
   applyTheme();
   showSplash();
   if (Object.keys(S.words).length === 0) seedWords();
+  migrateWordOrder();
   dailyBackup();
   ensureToday();
   const h = (location.hash || '').replace('#', '');

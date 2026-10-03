@@ -1,6 +1,6 @@
 /* 离线缓存：装到手机主屏后，断网也能打开。
    改了 index.html 之后，把下面的 VERSION 数字加一，手机上才会拿到新版本。 */
-const VERSION = 'cet4-coach-v2';
+const VERSION = 'cet4-coach-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -29,6 +29,22 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+  const wantsHTML = event.request.mode === 'navigate' ||
+    (event.request.headers.get('accept') || '').indexOf('text/html') >= 0;
+  /* 网页本体走「网络优先」：一联网就拿到最新版；断网时自动退回缓存。
+     图标、样式这类静态资源仍然缓存优先，省流量、打开快。 */
+  if (wantsHTML) {
+    event.respondWith(
+      fetch(event.request)
+        .then((res) => {
+          const copy = res.clone();
+          caches.open(VERSION).then((cache) => cache.put(event.request, copy)).catch(() => {});
+          return res;
+        })
+        .catch(() => caches.match(event.request).then((hit) => hit || caches.match('./index.html')))
+    );
+    return;
+  }
   event.respondWith(
     caches.match(event.request).then((hit) => {
       if (hit) return hit;
