@@ -326,6 +326,19 @@ body[data-pomo="true"] .fab{bottom:calc(78px + env(safe-area-inset-bottom))}
   .heat{grid-template-columns:repeat(9,1fr)}
   .fab{display:inline-flex}
   .grid.two{grid-template-columns:1fr}
+  /* 手机上一排 7 个标签会被挤出屏幕（还自动滚到右边，把「今日」「流程」藏起来），
+     改成等分网格：图标在上、文字在下，7 个一起显示，谁也不会被推到屏幕外 */
+  .tabs .inner{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;overflow:visible;padding:6px 8px}
+  .tab{flex-direction:column;gap:3px;justify-content:center;padding:6px 2px;font-size:11px;line-height:1.15;
+    border-radius:12px;min-width:0;position:relative}
+  .tab svg{width:17px;height:17px}
+  .tab>span{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  .tab .badge{position:absolute;top:3px;right:7px}
+  /* 设置页的表单太高，一屏只能看到两三项，手机上压一压 */
+  label.field{margin-top:9px}
+  label.field span{margin-bottom:4px}
+  input[type="number"],input[type="text"],input[type="search"],select{height:42px;padding:0 12px}
+  textarea{min-height:72px;padding:9px 12px}
 }
 </style>
 </head>
@@ -821,19 +834,86 @@ function restorePomo() {
     renderPomo();
   }
 }
-/* 用系统朗读把单词念出来：你现在的问题是「听得清但想不起意思」，这个按钮专门练它 */
-function speak(text) {
+/* 用系统朗读把单词念出来：你现在的问题是「听得清但想不起意思」，这个按钮专门练它。
+   iOS 上有三个坑，下面都绕开了：
+   1) 静音开关会把系统朗读掐掉 —— 先播一段无声音频，把音频通道切到「播放」模式；
+   2) 语音列表要等 voiceschanged 事件才拿得到，一开始取是空数组；
+   3) cancel() 紧接着 speak() 会被吞掉，中间必须留一点时间。 */
+const SILENT_WAV = 'data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
+let enVoice = null, audioWarmed = false;
+
+function loadVoices() {
   try {
-    if (!('speechSynthesis' in window)) return toast('这个浏览器不支持朗读', 'warn');
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(String(text));
-    u.lang = 'en-US';
-    u.rate = 0.9;
-    const voices = window.speechSynthesis.getVoices() || [];
-    const pick = voices.find(v => /^en[-_]?(US|GB)/i.test(v.lang)) || voices.find(v => /^en/i.test(v.lang));
-    if (pick) u.voice = pick;
-    window.speechSynthesis.speak(u);
-  } catch (e) { /* 静默失败，不影响背单词 */ }
+    const vs = window.speechSynthesis.getVoices() || [];
+    if (!vs.length) return;
+    const en = vs.filter(v => /^en/i.test(v.lang));
+    if (!en.length) return;
+    const want = S.settings.voiceURI;   /* 你在设置里选过的那条 */
+    enVoice = (want && (en.find(v => v.voiceURI === want) || en.find(v => v.name === want)))
+      || en.find(v => /^en[-_]?US/i.test(v.lang))   /* 没选过：美音优先 */
+      || en.find(v => /^en[-_]?GB/i.test(v.lang))
+      || en[0];
+  } catch (e) { /* 忽略 */ }
+}
+/* 给设置页用：把系统里的英语语音列出来 */
+function englishVoiceList() {
+  try { return (window.speechSynthesis.getVoices() || []).filter(v => /^en/i.test(v.lang)); }
+  catch (e) { return []; }
+}
+function voiceLabel(v) {
+  const us = /^en[-_]?US/i.test(v.lang), gb = /^en[-_]?GB/i.test(v.lang);
+  return v.name + '（' + (us ? '美音' : gb ? '英音' : v.lang) + '）';
+}
+/* 设置页那个下拉框的选项 */
+function voiceOptionsHtml() {
+  const list = englishVoiceList();
+  const cur = S.settings.voiceURI || '';
+  let out = '<option value="">自动（美音优先）</option>';
+  if (!list.length) out += '<option value="" disabled>（语音还没加载好，点右边「刷新语音列表」）</option>';
+  else out += list.map(v => {
+    const val = v.voiceURI || v.name;
+    return `<option value="${esc(val)}" ${cur === val ? 'selected' : ''}>${esc(voiceLabel(v))}</option>`;
+  }).join('');
+  return out;
+}
+if ('speechSynthesis' in window) {
+  loadVoices();
+  try { window.speechSynthesis.onvoiceschanged = loadVoices; } catch (e) { }
+}
+
+/* 第一次碰屏幕时放一段无声 wav：iOS 借此把音频通道切成「播放」，
+   之后系统朗读不会被静音开关掐掉，「听音想义」的自动朗读也才念得出来 */
+function warmAudio() {
+  if (audioWarmed) return;
+  audioWarmed = true;
+  try {
+    const a = new Audio(SILENT_WAV);
+    a.volume = 0.01;
+    const p = a.play();
+    if (p && p.catch) p.catch(() => { });
+  } catch (e) { /* 忽略 */ }
+}
+document.addEventListener('pointerdown', warmAudio, { once: true, passive: true });
+
+function speak(text) {
+  const txt = String(text || '').trim();
+  if (!txt) return;
+  if (!('speechSynthesis' in window)) return toast('这个浏览器不支持朗读', 'warn');
+  warmAudio();
+  loadVoices();
+  const synth = window.speechSynthesis;
+  try { synth.cancel(); } catch (e) { }
+  /* 给 cancel 留 60ms，否则 iOS 上这一条会被吞掉、听不到声音 */
+  setTimeout(() => {
+    try {
+      const u = new SpeechSynthesisUtterance(txt);
+      u.lang = enVoice ? enVoice.lang : 'en-US';
+      u.rate = 0.9; u.pitch = 1; u.volume = 1;
+      if (enVoice) u.voice = enVoice;
+      try { synth.resume(); } catch (e) { }
+      synth.speak(u);
+    } catch (e) { /* 静默失败，不影响背单词 */ }
+  }, 60);
 }
 
 function beep() {
@@ -1179,6 +1259,15 @@ let vq = [], vIdx = 0, vRevealed = false, vRight = 0, vTotal = 0;
 let vMode = 'read';      // read = 看词想义；listen = 听音想义
 let vLastSpoken = -1;
 let vqSample = new Set();  // 本轮里属于「抽查」的词
+let undoStack = [];        // 最近几次「记得/忘记」之前的状态，误触了可以退回来
+
+/* 换一轮：队列重建的时候，指针、统计、撤回栈都要跟着归零，
+   否则切到别的页面再回来会从中间接着走（跳号）。 */
+function startNewQueue() {
+  vq = buildVocabQueue();
+  vIdx = 0; vRevealed = false; vRight = 0; vTotal = 0; vLastSpoken = -1;
+  undoStack = [];
+}
 
 function seedWords(force) {
   let added = 0, i = 0;
@@ -1259,6 +1348,17 @@ function wordStats() {
 function buildVocabQueue() {
   const k = todayKey();
   const day = ensureToday();
+
+  /* 同一天里只定一份清单：把已经点过的词剔掉，剩下的接着做。
+     以前每次重新打开都会"再抓一批新词"，结果上午背一半、下午再开，
+     总量反而变大（越背越多）。现在一天的清单固定，分几次做都是同一份。 */
+  if (Array.isArray(day.vqKeys) && day.vqKeys.length) {
+    const keep = day.vqKeys.map(x => S.words[x])
+      .filter(w => w && (w.box === null || (w.due && w.due <= k)));
+    vqSample = new Set(day.vqSample || []);
+    return keep;
+  }
+
   const all = Object.values(S.words);
   const due = all.filter(w => w.box !== null && w.due && w.due <= k)
     .sort((a, b) => (a.box - b.box) || a.due.localeCompare(b.due));
@@ -1266,21 +1366,30 @@ function buildVocabQueue() {
   const rl = day.reviewWords || 80, nl = day.newWords || 20;
   const duePart = due.slice(0, rl);
   vqSample = new Set();
+  let result, sampleKeys = [];
 
   /* 书上的词全过完之后，进入「滚动抽查」：随机把学过的词翻出来再见一面，
      不让「背完一遍」变成「慢慢忘光」。 */
   if (fresh.length === 0) {
     const dueKeys = new Set(duePart.map(w => w.w));
     const pool = all.filter(w => w.box !== null && w.box >= 1 && !dueKeys.has(w.w));
-    for (let i = pool.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
-    }
+    /* 抽查用「日期+单词」定序，不用随机数：同一天里不管打开几次，
+      抽到的都是同一批词、同一个顺序，进度条才不会自己跳。 */
+    const seedHash = s => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
+    pool.sort((a, b) => seedHash(k + '|' + a.w) - seedHash(k + '|' + b.w));
     const sample = pool.slice(0, Math.min(Math.round(rl * 0.25), pool.length));
     sample.forEach(w => vqSample.add(w.w));
-    return [...duePart, ...sample];
+    result = [...duePart, ...sample];
+    sampleKeys = sample.map(w => w.w);
+  } else {
+    result = [...duePart, ...fresh.slice(0, nl)];
   }
-  return [...duePart, ...fresh.slice(0, nl)];
+
+  day.vqKeys = result.map(w => w.w);
+  day.vqSample = sampleKeys;
+  if (!day.vocabTarget) day.vocabTarget = result.length;   /* 今天的目标量，定了就不改 */
+  save();
+  return result;
 }
 
 function gradeWord(ok) {
@@ -1288,6 +1397,19 @@ function gradeWord(ok) {
   if (!w) return;
   const k = todayKey(), day = ensureToday();
   const word = S.words[w.w];
+  /* 先把这个词「点之前」的样子整份记下来：误触了能原样退回去，
+     连记忆强度的变化、今天的计数一起撤销。 */
+  undoStack.push({
+    key: w.w, ok: !!ok,
+    had: !!word,
+    box: word ? word.box : null, due: word ? (word.due || '') : '',
+    lapses: word ? (word.lapses || 0) : 0,
+    seen: word ? (word.seen || 0) : 0, right: word ? (word.right || 0) : 0,
+    daySeen: (day.review && day.review.seen) || 0,
+    dayRight: (day.review && day.review.right) || 0,
+    vRight, vTotal, idx: vIdx
+  });
+  if (undoStack.length > 40) undoStack.shift();
   if (word) {
     if (ok) { word.box = Math.min(SRS_DAYS.length - 1, (word.box === null ? 0 : word.box + 1)); word.due = shiftKey(k, SRS_DAYS[word.box]); }
     else { word.lapses = (word.lapses || 0) + 1; word.box = 0; word.due = shiftKey(k, 1); }
@@ -1301,6 +1423,24 @@ function gradeWord(ok) {
   save();
   vIdx++; vRevealed = false;
   renderVocab();
+}
+
+/* 退回上一个词：把这个词的记忆进度、今天的计数、按下的次数全部还原，
+   然后停在那个词上、直接显示答案，你可以重新点一次「记得/忘记」。 */
+function undoLast() {
+  const s = undoStack.pop();
+  if (!s) return toast('已经是第一个词了，没有可以退回的', 'warn');
+  const day = ensureToday();
+  const word = S.words[s.key];
+  if (word) {
+    word.box = s.box; word.due = s.due;
+    word.lapses = s.lapses; word.seen = s.seen; word.right = s.right;
+  }
+  if (day.review) { day.review.seen = s.daySeen; day.review.right = s.dayRight; }
+  vRight = s.vRight; vTotal = s.vTotal;
+  vIdx = s.idx; vRevealed = true;
+  save(true); renderVocab();
+  toast(`已退回「${s.key}」，刚才那一次${s.ok ? '记得' : '忘记'}已撤销`, 'ok');
 }
 
 function renderVocab() {
@@ -1325,16 +1465,28 @@ function renderVocab() {
 
   let bodyHtml = '';
   if (vocabTab === 'review') {
+    /* 今天的词汇进度：按「今天已经点过的 + 这一轮还剩的」算。
+       以前只算这一轮，所以你中午背一半、下午重新打开时进度条会归零。
+       现在不管分几次做，分子分母都跟着今天的总量走。 */
+    const today = ensureToday();
+    const dayDone = (today.review && today.review.seen) || 0;
+    const dayLeft = vq.length - vIdx;
+    /* 今天的目标量在当天第一次打开时就定了（实际排进来的复习量 + 新词量），
+       所以分几次做、重新打开几次，分母都是同一个数。 */
+    const dayTarget = Math.max(1, Number(today.vocabTarget) || (dayDone + Math.max(0, dayLeft)));
+    const dayPct = Math.min(100, Math.round(dayDone / dayTarget * 100));
     const cur = vq[vIdx];
     if (!cur) {
       const acc = vTotal ? Math.round(vRight / vTotal * 100) : 0;
       bodyHtml = `
         <div class="flash" style="margin-top:16px">
-          <div class="w">今日词汇完成</div>
-          <div class="m muted">这一轮过了 ${vTotal} 个词，记得 ${vRight} 个（正确率 ${acc}%）</div>
-          <p class="hint">明天它们会按 1 / 2 / 4 / 7 / 15 / 30 天的节奏自己排回来，你只需要今天如实点「记得」或「忘记」。</p>
+          <div class="w">今天的词汇做完了</div>
+          <div class="m muted">今天一共过了 <b>${dayDone}</b> 个词${vTotal ? `，这一轮记得 ${vRight} 个（正确率 ${acc}%）` : ''}</div>
+          <div class="progressline" style="max-width:420px;margin:14px auto 0"><i style="width:100%"></i></div>
+          <p class="hint">今天的词汇目标已经打满（${dayDone} / ${dayTarget}）。明天它们会按 1 / 2 / 4 / 7 / 15 / 30 天的节奏自己排回来，你只需要今天如实点「记得」或「忘记」。</p>
           <div class="acts">
             <button class="btn" id="vRestart">再刷一轮</button>
+            <button class="btn ghost" id="vUndo">↩ 退回上一个</button>
             <button class="btn ghost" data-vtab="bank">看看词库</button>
           </div>
         </div>`;
@@ -1344,22 +1496,24 @@ function renderVocab() {
       const qPct = vq.length ? Math.round(vIdx / vq.length * 100) : 0;
       bodyHtml = `
         <div class="flash" style="margin-top:16px">
-          <div style="position:absolute;right:14px;top:14px">${miniRing(qPct, vIdx, vq.length)}</div>
+          <div style="position:absolute;right:14px;top:14px" title="今天已完成 ${dayDone} / ${dayTarget} 个词">${miniRing(dayPct, dayDone, dayTarget)}</div>
           <div class="w">${hideWord ? '<span class="muted" style="font-size:22px">🔊 听发音，想意思</span>' : esc(word.w)}</div>
           <div class="pos">${hideWord ? '' : esc(word.pos || '')}</div>
           <div class="m">${vRevealed || hideWord ? (vRevealed ? esc(word.m) : '<span class="muted">想出来了吗？点下面揭晓</span>') : '<span class="muted">先在心里想一遍，再点下面</span>'}</div>
           ${word.lapses ? `<div class="ex muted">这个词你忘了 ${word.lapses} 次${word.box !== null ? ` · 下次间隔 ${SRS_LABEL[word.box] || '1 天'}` : ''}</div>` : ''}
           ${vqSample.has(word.w) ? '<div class="ex muted">抽查：这个词还没到期，提前见一面</div>' : ''}
           <div class="acts">
+            <button class="btn ghost" id="vUndo">↩ 上一个</button>
             <button class="btn ghost" id="vSpeak">🔊 听发音</button>
             ${vRevealed
               ? `<button class="btn ok" data-grade="1">记得</button><button class="btn danger" data-grade="0">忘记</button>`
               : `<button class="btn primary" id="vReveal">看答案</button>`}
           </div>
           <div class="progressline" style="max-width:420px;margin:18px auto 0">
-            <i style="width:${vq.length ? Math.round(vIdx / vq.length * 100) : 0}%"></i>
+            <i style="width:${dayPct}%"></i>
           </div>
-          <p class="hint">进度 ${vIdx} / ${vq.length} · 本轮认识 ${vRight}</p>
+          <p class="hint">今天已完成 <b>${dayDone}</b> / ${dayTarget} 个 · 这一轮还剩 ${Math.max(0, dayLeft)} 个 · 本轮认识 ${vRight}</p>
+          <p class="hint">进度是<b>按今天累计</b>算的：中午背一半、下午接着背，不会归零；已经点过的词也不会再来一遍。</p>
         </div>`;
     }
   } else if (vocabTab === 'bank') {
@@ -1403,7 +1557,11 @@ function renderVocab() {
 
   el.innerHTML = tabsHtml + modeHtml + bodyHtml;
 
-  el.querySelectorAll('[data-vtab]').forEach(b => b.onclick = () => { vocabTab = b.dataset.vtab; if (vocabTab === 'review') { vq = buildVocabQueue(); } renderVocab(); });
+  el.querySelectorAll('[data-vtab]').forEach(b => b.onclick = () => {
+    vocabTab = b.dataset.vtab;
+    if (vocabTab === 'review') startNewQueue();
+    renderVocab();
+  });
   el.querySelectorAll('[data-vmode]').forEach(b => b.onclick = () => {
     vMode = b.dataset.vmode;
     vLastSpoken = -1;
@@ -1411,6 +1569,7 @@ function renderVocab() {
   });
   const reveal = $('#vReveal'); if (reveal) reveal.onclick = () => { vRevealed = true; renderVocab(); };
   const spk = $('#vSpeak'); if (spk) spk.onclick = () => speak(vq[vIdx] ? vq[vIdx].w : '');
+  const und = $('#vUndo'); if (und) und.onclick = undoLast;
 
   /* 听音想义模式：显示卡片就自动念一遍，不显示单词 */
   if (vocabTab === 'review' && vMode === 'listen' && !vRevealed && vq[vIdx] && vLastSpoken !== vIdx) {
@@ -1418,7 +1577,11 @@ function renderVocab() {
     speak(vq[vIdx].w);
   }
   el.querySelectorAll('[data-grade]').forEach(b => b.onclick = () => gradeWord(b.dataset.grade === '1'));
-  const restart = $('#vRestart'); if (restart) restart.onclick = () => { vq = buildVocabQueue(); vIdx = 0; vRight = 0; vTotal = 0; vRevealed = false; renderVocab(); };
+  const restart = $('#vRestart'); if (restart) restart.onclick = () => {
+    /* 再刷一轮 = 额外加练：清掉今天的清单重新排一批，今天的累计进度照旧保留 */
+    const d = ensureToday(); d.vqKeys = null;
+    startNewQueue(); renderVocab();
+  };
   const nwAdd = $('#nwAdd');
   if (nwAdd) {
     const doAdd = () => {
@@ -2293,6 +2456,21 @@ function renderSettings() {
     </div>
 
     <div class="card">
+      <h2>发音<span class="sub">「听发音」和「听音想义」用的就是它</span></h2>
+      <p class="hint">App 不联网、也不带音频文件，用的是你手机系统自带的英语朗读。点下面试试：</p>
+      <label class="field"><span>英语发音（默认美音；系统里装了哪些就列哪些）</span>
+        <select id="setVoice">${voiceOptionsHtml()}</select></label>
+      <div class="row mt"><button class="btn" id="testSpeak">🔊 测试发音（读 abandon）</button>
+      <button class="btn ghost" id="voiceRefresh">刷新语音列表</button></div>
+      <ul class="hint" style="padding-left:20px;line-height:1.9">
+        <li>没声音，先看手机侧面的<b>静音键</b>——iPhone 静音时系统朗读会被掐掉；再把<b>音量按大</b></li>
+        <li>戴着蓝牙耳机的，声音会跑到耳机里，别以为是没响</li>
+        <li>还不行：用 Safari 打开同一个网址再试。Safari 有声音、主屏 App 没声音，就把这个现象告诉我</li>
+        <li>列表是空的、或者想要的语音没有：去 设置 → 通用 → 辅助功能 → 朗读内容 → 声音 → 英语 里下载（美音一般叫 Samantha、Ava、Alex，英音叫 Daniel、Serena）</li>
+      </ul>
+    </div>
+
+    <div class="card">
       <h2>关于这个 App 的实话</h2>
       <ul class="hint" style="padding-left:20px;line-height:2">
         <li>它不会替你学英语。它只负责把「今天该做什么」写清楚，并且不让你糊弄过去。</li>
@@ -2302,6 +2480,18 @@ function renderSettings() {
       </ul>
       <p class="hint">当前累计：词 ${Object.keys(S.words).length} 个 · 打卡 ${checkinDays()} 天 · 错题 ${S.mistakes.length} 条 · 模考 ${(S.meta.scores || []).length} 次</p>
     </div>`;
+
+  const tSpk = $('#testSpeak');
+  if (tSpk) tSpk.onclick = () => speak('abandon');
+  const vSel = $('#setVoice');
+  if (vSel) vSel.onchange = () => {
+    S.settings.voiceURI = vSel.value || '';
+    loadVoices(); save(true);
+    speak('abandon');
+    toast(S.settings.voiceURI ? '发音已换，听听看' : '已改回自动（美音优先）', 'ok');
+  };
+  const vRef = $('#voiceRefresh');
+  if (vRef) vRef.onclick = () => { loadVoices(); renderSettings(); toast('语音列表已刷新', 'ok'); };
 
   $('#setSave').onclick = () => {
     S.settings.examDate = $('#setExam').value || S.settings.examDate;
